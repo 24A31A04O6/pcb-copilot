@@ -1,6 +1,5 @@
 import 'server-only'
 
-import { google } from '@ai-sdk/google'
 import { runAllChecks } from '@tscircuit/checks'
 import { runTscircuitCode } from '@tscircuit/eval'
 import { generateText, Output } from 'ai'
@@ -15,7 +14,7 @@ import type {
 
 const MAX_REPAIR_ITERATIONS = 3
 const MAX_CODE_LENGTH = 80_000
-const MODEL_ID = process.env.GEMINI_MODEL?.trim() || 'gemini-3-flash'
+const MODEL_ID = process.env.GEMINI_MODEL?.trim() || 'google/gemini-2.5-pro'
 
 const designBriefSchema = z.object({
   status: z.enum(['ready', 'needs_clarification']),
@@ -46,24 +45,11 @@ Engineering rules:
 - Never invent a connection silently. Use the supplied assumptions and requirements.
 - Do not use JavaScript APIs, dynamic property access, loops without fixed bounds, timers, fetch, eval, Function, process, globalThis, window, document, WebSocket, or dynamic imports.`
 
-function assertApiKey() {
-  if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
-    throw new Error(
-      'Gemini is not configured. Add GOOGLE_GENERATIVE_AI_API_KEY in Vars, then retry.',
-    )
-  }
-}
-
-function model() {
-  assertApiKey()
-  return google(MODEL_ID)
-}
-
 export async function analyzeDesignRequest(
   messages: string[],
 ): Promise<DesignBrief> {
   const { output } = await generateText({
-    model: model(),
+    model: MODEL_ID,
     output: Output.object({ schema: designBriefSchema }),
     abortSignal: AbortSignal.timeout(45_000),
     prompt: `Review this PCB design conversation and decide whether the electrical and mechanical requirements are sufficient to generate a real design.
@@ -174,7 +160,7 @@ export async function compileAndVerify(code: string) {
 
 async function generateInitialCode(brief: DesignBrief) {
   const { text } = await generateText({
-    model: model(),
+    model: MODEL_ID,
     system: SYSTEM_PROMPT,
     abortSignal: AbortSignal.timeout(90_000),
     prompt: `Create the complete PCB design now.
@@ -194,7 +180,7 @@ async function repairCode(
   compileFailure?: string,
 ) {
   const { text } = await generateText({
-    model: model(),
+    model: MODEL_ID,
     system: SYSTEM_PROMPT,
     abortSignal: AbortSignal.timeout(90_000),
     prompt: `Repair this tscircuit design. Preserve its intended function, but fix every compiler, connectivity, placement, and routing failure. Return the full corrected TSX module only.

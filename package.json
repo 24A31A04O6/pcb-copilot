@@ -9,7 +9,6 @@
     "start": "next start"
   },
   "dependencies": {
-    "@ai-sdk/google": "^4.0.69",
     "@base-ui/react": "^1.5.0",
     "@shadcn/react": "^0.3.1",
     "@tscircuit/3d-viewer": "^0.0.598",
