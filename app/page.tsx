@@ -38,6 +38,10 @@ export default function Page() {
           messages: nextMessages
             .filter((message) => message.role === 'user')
             .map((message) => message.content),
+          allowClarification: !nextMessages.some(
+            (message) =>
+              message.role === 'assistant' && message.content.startsWith('I need '),
+          ),
         }),
       })
 
@@ -105,7 +109,7 @@ export default function Page() {
             pcb-copilot
           </h1>
           <p className="hidden font-mono text-[11px] tracking-[0.16em] text-muted-foreground uppercase sm:block">
-            Gemini + tscircuit
+            Fireworks + tscircuit
           </p>
         </div>
         <Badge

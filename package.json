@@ -18,7 +18,6 @@
     "@tscircuit/pcb-viewer": "^1.11.394",
     "@tscircuit/schematic-viewer": "^2.0.92",
     "@vercel/analytics": "1.6.1",
-    "ai": "^7.0.99",
     "circuit-json": "^0.0.490",
     "circuit-json-to-bom-csv": "^0.0.17",
     "circuit-json-to-gerber": "^0.0.106",

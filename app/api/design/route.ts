@@ -12,6 +12,7 @@ export const maxDuration = 300
 
 const requestSchema = z.object({
   messages: z.array(z.string().trim().min(1).max(4_000)).min(1).max(20),
+  allowClarification: z.boolean().default(true),
 })
 
 const requests = new Map<string, number[]>()
@@ -48,8 +49,11 @@ export async function POST(request: NextRequest) {
 
       void (async () => {
         try {
-          send({ type: 'stage', message: 'Reviewing requirements with Gemini' })
-          const brief = await analyzeDesignRequest(parsed.data.messages)
+          send({ type: 'stage', message: 'Reviewing requirements with Fireworks' })
+          const brief = await analyzeDesignRequest(
+            parsed.data.messages,
+            parsed.data.allowClarification,
+          )
 
           if (brief.status === 'needs_clarification' && brief.questions.length > 0) {
             send({ type: 'clarification', questions: brief.questions })

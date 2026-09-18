@@ -2,7 +2,6 @@ import 'server-only'
 
 import { runAllChecks } from '@tscircuit/checks'
 import { runTscircuitCode } from '@tscircuit/eval'
-import { generateText, Output } from 'ai'
 import type { AnyCircuitElement } from 'circuit-json'
 import { z } from 'zod'
 
@@ -14,7 +13,75 @@ import type {
 
 const MAX_REPAIR_ITERATIONS = 3
 const MAX_CODE_LENGTH = 80_000
-const MODEL_ID = process.env.GEMINI_MODEL?.trim() || 'google/gemini-2.5-pro'
+const FIREWORKS_API_URL = 'https://api.fireworks.ai/inference/v1/chat/completions'
+const MODEL_ID = 'accounts/fireworks/models/deepseek-v4p1-flash'
+
+type FireworksMessage = {
+  role: 'system' | 'user'
+  content: string
+}
+
+type FireworksResponse = {
+  choices?: Array<{
+    finish_reason?: string
+    message?: { content?: string }
+  }>
+  error?: { message?: string }
+}
+
+async function requestFireworks(
+  messages: FireworksMessage[],
+  options: { timeoutMs: number; jsonSchema?: Record<string, unknown> },
+) {
+  const apiKey = process.env.FIREWORKS_API_KEY?.trim()
+  if (!apiKey) {
+    throw new Error('Fireworks is not configured. Add FIREWORKS_API_KEY in Vars, then retry.')
+  }
+
+  const response = await fetch(FIREWORKS_API_URL, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: MODEL_ID,
+      max_tokens: 131_072,
+      top_k: 40,
+      presence_penalty: 0,
+      frequency_penalty: 0,
+      messages,
+      ...(options.jsonSchema
+        ? {
+            response_format: {
+              type: 'json_schema',
+              json_schema: {
+                name: 'pcb_design_brief',
+                schema: options.jsonSchema,
+              },
+            },
+          }
+        : {}),
+    }),
+    signal: AbortSignal.timeout(options.timeoutMs),
+  })
+
+  const payload = (await response.json().catch(() => null)) as FireworksResponse | null
+  if (!response.ok) {
+    throw new Error(
+      payload?.error?.message || `Fireworks request failed with status ${response.status}.`,
+    )
+  }
+
+  const choice = payload?.choices?.[0]
+  const content = choice?.message?.content?.trim()
+  if (!content) throw new Error('Fireworks returned an empty response.')
+  if (choice?.finish_reason === 'length') {
+    throw new Error('Fireworks reached its output limit before completing the design.')
+  }
+  return content
+}
 
 const designBriefSchema = z.object({
   status: z.enum(['ready', 'needs_clarification']),
@@ -47,27 +114,59 @@ Engineering rules:
 
 export async function analyzeDesignRequest(
   messages: string[],
+  allowClarification: boolean,
 ): Promise<DesignBrief> {
-  const { output } = await generateText({
-    model: MODEL_ID,
-    output: Output.object({ schema: designBriefSchema }),
-    abortSignal: AbortSignal.timeout(45_000),
-    prompt: `Review this PCB design conversation and decide whether the electrical and mechanical requirements are sufficient to generate a real design.
+  const content = await requestFireworks(
+    [
+      {
+        role: 'system',
+        content:
+          'You are a senior PCB requirements engineer. Return JSON matching the supplied schema exactly.',
+      },
+      {
+        role: 'user',
+        content: `Review this PCB design conversation and produce a complete engineering brief.
+
+${allowClarification ? 'This is the only opportunity to ask clarification questions.' : 'Clarification was already requested. Do not ask any more questions. Set status to ready and make conservative, explicit engineering assumptions for missing details.'}
 
 Ask only critical questions that materially change safety or function: supply voltage/range, maximum current, required interfaces, board dimensions/connector constraints, load characteristics, or exact controller when relevant. Do not ask cosmetic questions. If earlier messages answer a question, do not ask it again.
 
 Conversation:
 ${messages.map((message, index) => `${index + 1}. ${message}`).join('\n')}`,
-  })
+      },
+    ],
+    {
+      timeoutMs: 90_000,
+      jsonSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['status', 'questions', 'summary', 'assumptions', 'requirements'],
+        properties: {
+          status: {
+            type: 'string',
+            enum: allowClarification ? ['ready', 'needs_clarification'] : ['ready'],
+          },
+          questions: { type: 'array', maxItems: 5, items: { type: 'string' } },
+          summary: { type: 'string' },
+          assumptions: { type: 'array', maxItems: 20, items: { type: 'string' } },
+          requirements: { type: 'array', maxItems: 40, items: { type: 'string' } },
+        },
+      },
+    },
+  )
 
-  if (!output) throw new Error('Gemini did not return a design brief.')
-  return output
+  const parsed = designBriefSchema.safeParse(JSON.parse(content))
+  if (!parsed.success) throw new Error('Fireworks returned an invalid design brief.')
+  if (!allowClarification) {
+    return { ...parsed.data, status: 'ready', questions: [] }
+  }
+  return parsed.data
 }
 
 function extractTsx(text: string) {
   const fenced = text.match(/```(?:tsx|typescript|jsx|ts)?\s*([\s\S]*?)```/i)
   const code = (fenced?.[1] ?? text).trim()
-  if (!code) throw new Error('Gemini returned empty circuit source.')
+  if (!code) throw new Error('Fireworks returned empty circuit source.')
   if (code.length > MAX_CODE_LENGTH) throw new Error('Generated circuit source is too large.')
   return code
 }
@@ -159,18 +258,22 @@ export async function compileAndVerify(code: string) {
 }
 
 async function generateInitialCode(brief: DesignBrief) {
-  const { text } = await generateText({
-    model: MODEL_ID,
-    system: SYSTEM_PROMPT,
-    abortSignal: AbortSignal.timeout(90_000),
-    prompt: `Create the complete PCB design now.
+  const text = await requestFireworks(
+    [
+      { role: 'system', content: SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: `Create the complete PCB design now.
 
 Summary: ${brief.summary}
 Requirements:
 ${brief.requirements.map((item) => `- ${item}`).join('\n')}
 Assumptions:
 ${brief.assumptions.map((item) => `- ${item}`).join('\n')}`,
-  })
+      },
+    ],
+    { timeoutMs: 180_000 },
+  )
   return extractTsx(text)
 }
 
@@ -179,11 +282,12 @@ async function repairCode(
   diagnostics: DesignDiagnostic[],
   compileFailure?: string,
 ) {
-  const { text } = await generateText({
-    model: MODEL_ID,
-    system: SYSTEM_PROMPT,
-    abortSignal: AbortSignal.timeout(90_000),
-    prompt: `Repair this tscircuit design. Preserve its intended function, but fix every compiler, connectivity, placement, and routing failure. Return the full corrected TSX module only.
+  const text = await requestFireworks(
+    [
+      { role: 'system', content: SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: `Repair this tscircuit design. Preserve its intended function, but fix every compiler, connectivity, placement, and routing failure. Return the full corrected TSX module only.
 
 Compiler failure: ${compileFailure ?? 'none'}
 Diagnostics:
@@ -191,7 +295,10 @@ ${diagnostics.map((item) => `- [${item.severity}] ${item.type}: ${item.message}`
 
 Current source:
 ${code}`,
-  })
+      },
+    ],
+    { timeoutMs: 180_000 },
+  )
   return extractTsx(text)
 }
 
@@ -238,7 +345,7 @@ export async function createVerifiedDesign(
       }
 
       callbacks.onStage(
-        `Repairing ${result.diagnostics.filter((item) => item.severity === 'error').length} blocking issue(s) with Gemini`,
+        `Repairing ${result.diagnostics.filter((item) => item.severity === 'error').length} blocking issue(s) with Fireworks`,
       )
       code = await repairCode(code, result.diagnostics)
     } catch (error) {

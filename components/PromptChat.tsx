@@ -73,7 +73,7 @@ export function PromptChat({ messages, isGenerating, onSubmit }: PromptChatProps
                       </EmptyMedia>
                       <EmptyTitle>Describe the board you need</EmptyTitle>
                       <EmptyDescription>
-                        Gemini writes real tscircuit source, compiles it, runs
+                        Fireworks writes real tscircuit source, compiles it, runs
                         connectivity and layout checks, repairs failures, and
                         unlocks fabrication files only after verification.
                       </EmptyDescription>
