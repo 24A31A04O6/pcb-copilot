@@ -1,18 +1,21 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  typescript: {
-    ignoreBuildErrors: true,
-  },
   images: {
     unoptimized: true,
   },
   transpilePackages: [
-    'tscircuit',
     '@tscircuit/pcb-viewer',
     '@tscircuit/schematic-viewer',
     '@tscircuit/3d-viewer',
     '@tscircuit/core',
+  ],
+  serverExternalPackages: [
+    '@tscircuit/checks',
     '@tscircuit/eval',
+    'circuit-json-to-bom-csv',
+    'circuit-json-to-gerber',
+    'circuit-json-to-pnp-csv',
+    'jszip',
   ],
   turbopack: {},
   async headers() {

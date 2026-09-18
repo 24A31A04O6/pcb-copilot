@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 
 import { Skeleton } from '@/components/ui/skeleton'
-import type { CircuitJson } from '@/lib/sample-circuit'
+import type { CircuitJson } from '@/lib/design'
 
 const PCBViewer = dynamic(
   () => import('@tscircuit/pcb-viewer').then((mod) => mod.PCBViewer),

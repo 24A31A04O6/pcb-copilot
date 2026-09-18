@@ -3,7 +3,7 @@
 import dynamic from 'next/dynamic'
 
 import { Skeleton } from '@/components/ui/skeleton'
-import type { CircuitJson } from '@/lib/sample-circuit'
+import type { CircuitJson } from '@/lib/design'
 
 const CadViewer = dynamic(
   () => import('@tscircuit/3d-viewer').then((mod) => mod.CadViewer),

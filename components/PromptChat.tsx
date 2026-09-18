@@ -38,11 +38,7 @@ type PromptChatProps = {
   onSubmit: (prompt: string) => void
 }
 
-export function PromptChat({
-  messages,
-  isGenerating,
-  onSubmit,
-}: PromptChatProps) {
+export function PromptChat({ messages, isGenerating, onSubmit }: PromptChatProps) {
   const [value, setValue] = useState('')
   const formRef = useRef<HTMLFormElement>(null)
 
@@ -57,10 +53,10 @@ export function PromptChat({
     <section className="flex h-full min-h-0 flex-col bg-background">
       <header className="flex h-11 shrink-0 items-center justify-between border-b px-4">
         <p className="font-mono text-[11px] tracking-[0.22em] text-muted-foreground uppercase">
-          Prompt
+          Engineering brief
         </p>
         <p className="font-mono text-[11px] text-muted-foreground">
-          {messages.filter((message) => message.role === 'user').length} log
+          {messages.filter((message) => message.role === 'user').length} input
         </p>
       </header>
 
@@ -75,10 +71,11 @@ export function PromptChat({
                       <EmptyMedia variant="icon">
                         <CircuitBoardIcon />
                       </EmptyMedia>
-                      <EmptyTitle>No prompts yet</EmptyTitle>
+                      <EmptyTitle>Describe the board you need</EmptyTitle>
                       <EmptyDescription>
-                        Describe a circuit below. Generation is still using a
-                        sample blink board.
+                        Gemini writes real tscircuit source, compiles it, runs
+                        connectivity and layout checks, repairs failures, and
+                        unlocks fabrication files only after verification.
                       </EmptyDescription>
                     </EmptyHeader>
                   </Empty>
@@ -90,11 +87,14 @@ export function PromptChat({
                     messageId={message.id}
                     scrollAnchor={message.role === 'user'}
                   >
-                    {message.role === 'user' ? (
-                      <Message align="end">
+                    {message.role === 'user' || message.role === 'assistant' ? (
+                      <Message align={message.role === 'user' ? 'end' : 'start'}>
                         <MessageContent>
-                          <Bubble variant="default" align="end">
-                            <BubbleContent className="font-mono text-[13px] leading-relaxed">
+                          <Bubble
+                            variant={message.role === 'user' ? 'default' : 'outline'}
+                            align={message.role === 'user' ? 'end' : 'start'}
+                          >
+                            <BubbleContent className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed">
                               {message.content}
                             </BubbleContent>
                           </Bubble>
@@ -108,11 +108,9 @@ export function PromptChat({
                         }
                       >
                         <MarkerIcon>
-                          {message.tone === 'info' && isGenerating ? (
-                            <Spinner />
-                          ) : null}
+                          {message.tone === 'info' && isGenerating ? <Spinner /> : null}
                         </MarkerIcon>
-                        <MarkerContent className="font-mono text-[11px] tracking-[0.14em] uppercase">
+                        <MarkerContent className="font-mono text-[11px] tracking-[0.12em] uppercase">
                           {message.content}
                         </MarkerContent>
                       </Marker>
@@ -139,8 +137,8 @@ export function PromptChat({
             rows={3}
             value={value}
             disabled={isGenerating}
-            placeholder="Describe a circuit to generate…"
-            aria-label="Circuit prompt"
+            placeholder="e.g. 5 V USB-C sensor board, 40 × 25 mm…"
+            aria-label="Circuit requirements"
             className="min-h-20 font-mono text-[13px] leading-relaxed"
             onChange={(event) => setValue(event.target.value)}
             onKeyDown={(event) => {
@@ -154,7 +152,7 @@ export function PromptChat({
             <InputGroupText>
               <Kbd>↵</Kbd>
               <span className="font-mono text-[11px] tracking-[0.12em] uppercase">
-                Generate
+                Run agent
               </span>
             </InputGroupText>
             <InputGroupButton
@@ -164,7 +162,7 @@ export function PromptChat({
               disabled={isGenerating || value.trim().length === 0}
             >
               {isGenerating ? <Spinner data-icon="inline-start" /> : null}
-              Generate
+              {isGenerating ? 'Working' : 'Generate'}
             </InputGroupButton>
           </InputGroupAddon>
         </InputGroup>

@@ -15,8 +15,9 @@ const geistMono = Geist_Mono({
 })
 
 export const metadata: Metadata = {
-  title: 'pcb-copilot',
-  description: 'AI-assisted PCB design copilot with schematic, layout, and 3D views.',
+  title: 'pcb-copilot — Autonomous PCB engineering',
+  description:
+    'Generate, compile, verify, visualize, and export real tscircuit PCB designs with Gemini.',
   generator: 'v0.app',
   icons: {
     icon: [
