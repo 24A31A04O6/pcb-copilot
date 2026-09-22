@@ -1,18 +1,13 @@
 import { Analytics } from '@vercel/analytics/next'
+import { GeistMono } from 'geist/font/mono'
+import { GeistSans } from 'geist/font/sans'
 import type { Metadata, Viewport } from 'next'
-import { Geist, Geist_Mono } from 'next/font/google'
 
 import './globals.css'
 
-const geistSans = Geist({
-  subsets: ['latin'],
-  variable: '--font-geist-sans',
-})
+const geistSans = GeistSans
 
-const geistMono = Geist_Mono({
-  subsets: ['latin'],
-  variable: '--font-geist-mono',
-})
+const geistMono = GeistMono
 
 export const metadata: Metadata = {
   title: 'pcb-copilot — Autonomous PCB engineering',
