@@ -1,43 +1,49 @@
-import { NextRequest } from 'next/server'
-import { z } from 'zod'
-
 import type { DesignStreamEvent } from '@/lib/design'
-import {
-  analyzeDesignRequest,
-  createVerifiedDesign,
-} from '@/lib/server/pcb-agent'
+import { clientKeyFromRequest, createRateLimitStore } from '@/lib/rate-limit'
+import { designRequestSchema } from '@/lib/schemas'
+import { createVerifiedDesign } from '@/lib/server/agent'
+import { analyzeDesignRequest } from '@/lib/server/brief'
+import { getServerConfig } from '@/lib/server/config'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
 
-const requestSchema = z.object({
-  messages: z.array(z.string().trim().min(1).max(4_000)).min(1).max(20),
-  allowClarification: z.boolean().default(true),
-})
+const rateLimit = createRateLimitStore({ max: 6, windowMs: 10 * 60_000 })
 
-const requests = new Map<string, number[]>()
+export async function POST(request: Request) {
+  const clientKey = clientKeyFromRequest(request)
 
-function enforceRateLimit(request: NextRequest) {
-  const key = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'local'
-  const now = Date.now()
-  const recent = (requests.get(key) ?? []).filter((time) => now - time < 10 * 60_000)
-  if (recent.length >= 6) return false
-  recent.push(now)
-  requests.set(key, recent)
-  return true
-}
-
-export async function POST(request: NextRequest) {
-  if (!enforceRateLimit(request)) {
-    return Response.json(
-      { error: 'Too many design requests. Please wait before trying again.' },
-      { status: 429 },
+  if (!rateLimit.allow(clientKey)) {
+    return new Response(
+      JSON.stringify({
+        error: 'Too many design requests. Please wait before trying again.',
+      }),
+      { status: 429, headers: { 'Content-Type': 'application/json' } },
     )
   }
 
-  const parsed = requestSchema.safeParse(await request.json().catch(() => null))
+  const parsed = designRequestSchema.safeParse(
+    await request.json().catch(() => null),
+  )
   if (!parsed.success) {
-    return Response.json({ error: 'Invalid design conversation.' }, { status: 400 })
+    rateLimit.clear(clientKey)
+    return new Response(JSON.stringify({ error: 'Invalid design conversation.' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  let config: ReturnType<typeof getServerConfig>
+  try {
+    config = getServerConfig()
+  } catch (error) {
+    rateLimit.clear(clientKey)
+    return new Response(
+      JSON.stringify({
+        error: error instanceof Error ? error.message : 'Server misconfigured.',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    )
   }
 
   const encoder = new TextEncoder()
@@ -51,16 +57,18 @@ export async function POST(request: NextRequest) {
         try {
           send({ type: 'stage', message: 'Reviewing requirements with Fireworks' })
           const brief = await analyzeDesignRequest(
+            config,
             parsed.data.messages,
             parsed.data.allowClarification,
           )
 
           if (brief.status === 'needs_clarification' && brief.questions.length > 0) {
+            rateLimit.clear(clientKey)
             send({ type: 'clarification', questions: brief.questions })
             return
           }
 
-          const design = await createVerifiedDesign(brief, {
+          const design = await createVerifiedDesign(config, brief, {
             onStage: (message) => send({ type: 'stage', message }),
           })
           send({ type: 'result', design })

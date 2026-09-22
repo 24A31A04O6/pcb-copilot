@@ -1,8 +1,6 @@
-pmOnFail: ignore
-
 minimumReleaseAgeExclude:
   - '@next/*'
   - next
 
 allowBuilds:
-  sharp: set this to true or false
+  sharp: false

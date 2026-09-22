@@ -15,6 +15,13 @@ export type DesignStats = {
   boardHeightMm: number | null
 }
 
+export type VerificationResult = {
+  circuitJson: CircuitJson
+  diagnostics: DesignDiagnostic[]
+  stats: DesignStats
+  verified: boolean
+}
+
 export type DesignResult = {
   tsx: string
   circuitJson: CircuitJson

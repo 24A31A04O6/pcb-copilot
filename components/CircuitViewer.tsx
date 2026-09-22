@@ -24,6 +24,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import type { DesignResult } from '@/lib/design'
+import { MANUFACTURING_BUNDLE_FILENAME } from '@/lib/exports'
 
 type CircuitViewerProps = {
   design: DesignResult | null
@@ -57,7 +58,7 @@ export function CircuitViewer({ design, isGenerating }: CircuitViewerProps) {
       const url = URL.createObjectURL(blob)
       const anchor = document.createElement('a')
       anchor.href = url
-      anchor.download = 'pcb-copilot-manufacturing.zip'
+      anchor.download = MANUFACTURING_BUNDLE_FILENAME
       anchor.click()
       URL.revokeObjectURL(url)
     } catch (error) {
