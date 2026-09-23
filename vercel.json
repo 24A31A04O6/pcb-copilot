@@ -1,0 +1,22 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "functions": {
+    "app/api/design/route.ts": {
+      "maxDuration": 300,
+      "memory": 1024
+    },
+    "app/api/export/route.ts": {
+      "maxDuration": 120,
+      "memory": 1024
+    },
+    "app/api/review/route.ts": {
+      "maxDuration": 60,
+      "memory": 512
+    }
+  },
+  "crons": [],
+  "regions": ["sfo1", "iad1"],
+  "cleanUrls": true,
+  "trailingSlash": false
+}
