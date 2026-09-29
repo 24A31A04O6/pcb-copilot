@@ -1,58 +1,93 @@
 import { Analytics } from '@vercel/analytics/next'
-import { GeistMono } from 'geist/font/mono'
-import { GeistSans } from 'geist/font/sans'
 import type { Metadata, Viewport } from 'next'
+
+import { ZeroLogo } from '@/components/ZeroLogo'
 
 import './globals.css'
 
-const geistSans = GeistSans
-
-const geistMono = GeistMono
-
 export const metadata: Metadata = {
-  title: 'PCB Copilot — Brutal PCB Engineering • Cyan & White',
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? 'https://pcb-copilot.vercel.app'),
+  title: {
+    default: 'PCB-Copilot — brief to verified, manufacturable PCB',
+    template: '%s · PCB-Copilot',
+  },
   description:
-    'Generate, compile, verify, visualize, and export real tscircuit PCB designs with Fireworks AI. Neobrutalism cyan-and-white UI, live generation, robust review, end-to-end manufacturing.',
-  generator: 'pcb-copilot-v2-brutal',
-  keywords: ['PCB', 'tscircuit', 'Fireworks AI', 'neobrutalism', 'electronics', 'manufacturing'],
+    'Turn a plain-English engineering brief into a real tscircuit PCB design: schematic, routed board, 3D, checks, and Gerber/BOM exports unlocked only after automated verification.',
+  applicationName: 'PCB-Copilot',
+  generator: 'pcb-copilot',
+  keywords: [
+    'PCB',
+    'tscircuit',
+    'circuit-json',
+    'Gerber',
+    'Fireworks AI',
+    'electronics',
+    'PCB design automation',
+    'manufacturing',
+  ],
+  authors: [{ name: 'PCB-Copilot' }],
+  openGraph: {
+    type: 'website',
+    title: 'PCB-Copilot — brief to verified, manufacturable PCB',
+    description:
+      'Describe a board in plain English. ZERO writes tscircuit source, compiles it in a sandbox, runs connectivity and fab checks, repairs failures, and unlocks manufacturing files only when everything passes.',
+    images: [{ url: '/og.png', width: 1200, height: 630, alt: 'PCB-Copilot' }],
+    siteName: 'PCB-Copilot',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'PCB-Copilot',
+    description: 'Plain English in. Verified, manufacturable PCB out.',
+    images: ['/og.png'],
+  },
   icons: {
     icon: [
-      {
-        url: '/icon-light-32x32.png',
-        media: '(prefers-color-scheme: light)',
-      },
-      {
-        url: '/icon-dark-32x32.png',
-        media: '(prefers-color-scheme: dark)',
-      },
-      {
-        url: '/icon.svg',
-        type: 'image/svg+xml',
-      },
+      { url: '/icon.svg', type: 'image/svg+xml' },
+      { url: '/icon-32.png', sizes: '32x32', type: 'image/png' },
+      { url: '/icon-16.png', sizes: '16x16', type: 'image/png' },
     ],
-    apple: '/apple-icon.png',
+    apple: [{ url: '/apple-icon.png', sizes: '180x180' }],
   },
+  robots: { index: true, follow: true },
 }
 
 export const viewport: Viewport = {
+  // Light only, always. There is no dark theme in this app.
   colorScheme: 'light',
-  themeColor: [
-    { media: '(prefers-color-scheme: light)', color: '#00E5FF' },
-    { media: '(prefers-color-scheme: dark)', color: '#00E5FF' },
-  ],
+  themeColor: '#22D3EE',
+  width: 'device-width',
+  initialScale: 1,
 }
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode
-}>) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full`}
-    >
-      <body className="h-full font-mono antialiased bg-white text-black selection:bg-[#00E5FF] selection:text-black">
+    <html lang="en" className="h-full">
+      <head>
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
+        {/*
+          Registered only in production and only from a secure context. A service worker in
+          dev caches the very modules HMR is trying to replace, which produces a debugging
+          session nobody can reason about. See public/sw.js for what it does and does not
+          cache: the app shell yes, the API never.
+        */}
+        {process.env.NODE_ENV === 'production' && (
+          <script
+            dangerouslySetInnerHTML={{
+              __html: `if('serviceWorker' in navigator){addEventListener('load',function(){navigator.serviceWorker.register('/sw.js').catch(function(){})})}`,
+            }}
+          />
+        )}
+      </head>
+      <body className="h-full bg-[var(--paper)] text-[var(--ink)] antialiased">
+        <a
+          href="#main"
+          className="brutal-sm sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:bg-white focus:px-3 focus:py-2 focus:text-sm focus:font-bold"
+        >
+          Skip to content
+        </a>
+        <span className="sr-only">
+          <ZeroLogo />
+        </span>
         {children}
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>

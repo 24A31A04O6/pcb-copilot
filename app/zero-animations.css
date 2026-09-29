@@ -1,0 +1,179 @@
+/* =============================================================================
+   ZERO mascot — pixel keyframes.
+   Every keyframe uses steps() so the mascot snaps between cells and is never
+   interpolated into a blurry in-between frame. prefers-reduced-motion freezes all
+   of this via the global rule in app/globals.css.
+   ========================================================================== */
+
+.zero-sprite {
+  overflow: visible;
+}
+
+.zero-root {
+  transform-origin: 12px 22px;
+}
+
+.zero-arm-left {
+  transform-origin: 7px 8px;
+  animation: zero-wave 1.6s steps(4, end) infinite;
+}
+
+.zero-idle .zero-arm-left,
+.zero-success .zero-arm-left {
+  animation: zero-wave 1.2s steps(4, end) infinite;
+}
+
+.zero-compiling .zero-arm-left,
+.zero-repairing .zero-arm-left {
+  animation: zero-type 0.28s steps(2, end) infinite;
+}
+
+.zero-checking .zero-arm-left,
+.zero-reading .zero-arm-left {
+  animation: zero-point 1.1s steps(3, end) infinite;
+}
+
+.zero-error .zero-arm-left {
+  animation: zero-shrug 2.4s steps(6, end) infinite;
+}
+
+.zero-blink {
+  opacity: 0;
+  animation: zero-blink 4s steps(1, end) infinite;
+}
+
+.zero-reading .zero-blink,
+.zero-compiling .zero-blink,
+.zero-checking .zero-blink,
+.zero-repairing .zero-blink {
+  animation: none;
+  opacity: 0;
+}
+
+.zero-idle,
+.zero-locked,
+.zero-unlocked {
+  animation: zero-bob 2.4s steps(3, end) infinite;
+}
+
+.zero-compiling .zero-body,
+.zero-checking .zero-body {
+  animation: zero-nudge 0.6s steps(2, end) infinite;
+}
+
+.zero-reading .zero-body {
+  animation: zero-lean 1.6s steps(3, end) infinite;
+}
+
+.zero-repairing .zero-body {
+  animation: zero-shake 0.42s steps(2, end) infinite;
+}
+
+.zero-success {
+  animation: zero-hop 0.7s steps(5, end) 2, zero-bob 2.4s steps(3, end) 1s infinite;
+}
+
+.zero-error {
+  animation: zero-shake 0.4s steps(2, end) 3, zero-bob 2.4s steps(3, end) 1.2s infinite;
+}
+
+.zero-prop-gear {
+  transform-origin: 12px 5px;
+  animation: zero-spin 1.1s steps(8, end) infinite;
+}
+
+.zero-prop-magnifier {
+  animation: zero-scan 1.5s steps(4, end) infinite;
+}
+
+.zero-prop-wrench {
+  transform-origin: 20px 5px;
+  animation: zero-turn 0.9s steps(4, end) infinite;
+}
+
+.zero-prop-package {
+  animation: zero-pull 1.1s steps(4, end) infinite;
+}
+
+@keyframes zero-wave {
+  0% { transform: rotate(0deg); }
+  25% { transform: rotate(-16deg); }
+  50% { transform: rotate(0deg); }
+  75% { transform: rotate(-16deg); }
+  100% { transform: rotate(0deg); }
+}
+
+@keyframes zero-type {
+  0% { transform: translate(0, 0) rotate(0deg); }
+  50% { transform: translate(0, 1px) rotate(-7deg); }
+  100% { transform: translate(0, 0) rotate(0deg); }
+}
+
+@keyframes zero-point {
+  0% { transform: rotate(0deg); }
+  50% { transform: rotate(-34deg); }
+  100% { transform: rotate(0deg); }
+}
+
+@keyframes zero-shrug {
+  0%, 78% { transform: rotate(0deg); }
+  84% { transform: rotate(22deg); }
+  92% { transform: rotate(14deg); }
+  100% { transform: rotate(0deg); }
+}
+
+@keyframes zero-blink {
+  0%, 92% { opacity: 0; }
+  94%, 97% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes zero-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-1px); }
+}
+
+@keyframes zero-nudge {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(0.5px); }
+}
+
+@keyframes zero-lean {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(-3deg); }
+}
+
+@keyframes zero-shake {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(0.5px); }
+}
+
+@keyframes zero-hop {
+  0% { transform: translateY(0) scaleY(1); }
+  30% { transform: translateY(-2px) scaleY(1.06); }
+  60% { transform: translateY(0) scaleY(0.95); }
+  100% { transform: translateY(0) scaleY(1); }
+}
+
+@keyframes zero-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes zero-scan {
+  0% { transform: translate(0, 0); }
+  50% { transform: translate(-2px, 0); }
+  100% { transform: translate(0, 0); }
+}
+
+@keyframes zero-turn {
+  0% { transform: rotate(0deg); }
+  50% { transform: rotate(-22deg); }
+  100% { transform: rotate(0deg); }
+}
+
+@keyframes zero-pull {
+  0% { transform: translate(0, 0); }
+  50% { transform: translate(2px, -2px); }
+  100% { transform: translate(0, 0); }
+}
