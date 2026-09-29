@@ -1,184 +1,153 @@
-import { convertBomRowsToCsv, convertCircuitJsonToBomRows } from 'circuit-json-to-bom-csv'
-import { convertCircuitJsonToGerberFiles } from 'circuit-json-to-gerber'
-import { convertCircuitJsonToPickAndPlaceCsv } from 'circuit-json-to-pnp-csv'
-import type { AnyCircuitElement } from 'circuit-json'
-import JSZip from 'jszip'
-
-import { buildManufacturingBundleResponse } from '@/lib/exports'
-import { clientKeyFromRequest, createRateLimitStore } from '@/lib/rate-limit'
+import { toClientError, toAppError } from '@/lib/errors'
+import { rateLimitExport } from '@/lib/server/rate-limit'
 import { exportRequestSchema } from '@/lib/schemas'
-import { getModelId } from '@/lib/server/config'
-import { compileAndVerify } from '@/lib/server/verification'
+import { buildFabricationBundle, buildIndividualFiles, bundleFilename } from '@/lib/server/exports'
+import { getVerifiedDesign } from '@/lib/server/store'
+import type { DesignResult } from '@/lib/design'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
-export const preferredRegion = ['sfo1', 'iad1']
 
-const exportRateLimit = createRateLimitStore({ max: 10, windowMs: 5 * 60_000, maxKeys: 2000 })
+/**
+ * Exports are keyed by design hash. The server re-reads its own verified record and
+ * re-runs nothing that the client controls, so a caller cannot get Gerbers for a design
+ * that never passed the checks.
+ */
 
-export async function POST(request: Request) {
-  const requestId = crypto.randomUUID().slice(0, 8)
-  const clientKey = clientKeyFromRequest(request)
-
-  if (!exportRateLimit.allow(clientKey)) {
-    return new Response(
-      JSON.stringify({ error: 'Too many export requests. Please wait.', requestId }),
-      {
-        status: 429,
-        headers: {
-          'Content-Type': 'application/json',
-          'Retry-After': '60',
-          'X-Request-Id': requestId,
-        },
-      },
-    )
-  }
-
-  const parsed = exportRequestSchema.safeParse(
-    await request.json().catch(() => null),
-  )
-  if (!parsed.success) {
-    exportRateLimit.rollback(clientKey)
-    return new Response(
-      JSON.stringify({
-        error: 'Invalid export request.',
-        details: parsed.error.issues.slice(0, 3).map((i) => i.message),
-        requestId,
-      }),
-      {
-        status: 400,
-        headers: { 'Content-Type': 'application/json', 'X-Request-Id': requestId },
-      },
-    )
-  }
-
-  const abortSignal = request.signal
-
-  try {
-    if (abortSignal.aborted) {
-      throw new DOMException('Export aborted', 'AbortError')
-    }
-
-    const verification = await compileAndVerify(parsed.data.tsx, {
-      signal: abortSignal,
-      timeoutMs: 30_000,
-    })
-    const circuitJson = verification.circuitJson as AnyCircuitElement[]
-
-    if (!verification.verified) {
-      exportRateLimit.rollback(clientKey)
-      return new Response(
-        JSON.stringify({
-          error: 'Manufacturing export blocked because verification failed.',
-          diagnostics: verification.diagnostics.filter((item) => item.severity === 'error').slice(0, 20),
-          requestId,
-        }),
-        { status: 422, headers: { 'Content-Type': 'application/json', 'X-Request-Id': requestId } },
-      )
-    }
-
-    if (abortSignal.aborted) throw new DOMException('Export aborted', 'AbortError')
-
-    const zip = new JSZip()
-
-    // Gerber files with timeout guard
-    let gerberFiles: Record<string, string>
-    try {
-      gerberFiles = convertCircuitJsonToGerberFiles(circuitJson)
-    } catch (e) {
-      throw new Error(`Gerber generation failed: ${e instanceof Error ? e.message : 'unknown'}`)
-    }
-
-    for (const [filename, contents] of Object.entries(gerberFiles)) {
-      if (abortSignal.aborted) throw new DOMException('Export aborted', 'AbortError')
-      zip.file(`fabrication/${safeFilename(filename)}`, contents)
-    }
-
-    // BOM with error handling
-    try {
-      const bomRows = await convertCircuitJsonToBomRows({ circuitJson })
-      zip.file('assembly/bom.csv', convertBomRowsToCsv(bomRows))
-      zip.file('assembly/pick-and-place.csv', convertCircuitJsonToPickAndPlaceCsv(circuitJson))
-    } catch (e) {
-      console.warn(`[export:${requestId}] BOM generation warning:`, e)
-      zip.file('assembly/bom-error.txt', `BOM generation failed: ${e instanceof Error ? e.message : 'unknown'}`)
-    }
-
-    zip.file('design/circuit.tsx', parsed.data.tsx)
-    zip.file('design/circuit.json', JSON.stringify(circuitJson, null, 2))
-    zip.file(
-      'verification/report.json',
-      JSON.stringify(
-        {
-          verified: true,
-          generatedAt: new Date().toISOString(),
-          model: getModelId(),
-          summary: parsed.data.summary,
-          assumptions: parsed.data.assumptions,
-          stats: verification.stats,
-          diagnostics: verification.diagnostics,
-          requestId,
-        },
-        null,
-        2,
-      ),
-    )
-    zip.file(
-      'README.txt',
-      `PCB COPILOT MANUFACTURING BUNDLE
-Request: ${requestId}
-Generated: ${new Date().toISOString()}
-
-${parsed.data.summary}
-
-ASSUMPTIONS:
-${parsed.data.assumptions.map((a) => `- ${a}`).join('\n')}
-
-This bundle was compiled from tscircuit TSX and passed automated compiler, connectivity, placement, and routing checks included in the verification report. Automated checks cannot validate every electrical, thermal, EMC, regulatory, footprint, or supply-chain constraint. A qualified engineer must review the schematic, datasheets, footprints, stack-up, and fabrication outputs before ordering or assembly.
-
-STATS:
-- Components: ${verification.stats.components}
-- Nets: ${verification.stats.sourceTraces}
-- Routed: ${verification.stats.routedTraces}
-- Layers: ${verification.stats.pcbLayers}
-${verification.stats.boardWidthMm ? `- Board: ${verification.stats.boardWidthMm} x ${verification.stats.boardHeightMm} mm` : ''}
-
-VERIFICATION: PASSED
-`,
-    )
-
-    const archive = await zip.generateAsync({
-      type: 'uint8array',
-      compression: 'DEFLATE',
-      compressionOptions: { level: 6 },
-    })
-
-    if (archive.length > 50 * 1024 * 1024) {
-      throw new Error('Manufacturing bundle too large (>50MB). Simplify design.')
-    }
-
-    return buildManufacturingBundleResponse(archive, requestId)
-  } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      return new Response(null, { status: 499, headers: { 'X-Request-Id': requestId } })
-    }
-    console.error(`[export:${requestId}] failed:`, error)
-    return new Response(
-      JSON.stringify({
-        error: error instanceof Error ? error.message : 'Export failed.',
-        requestId,
-      }),
-      { status: 500, headers: { 'Content-Type': 'application/json', 'X-Request-Id': requestId } },
-    )
+function storedToDesign(entry: NonNullable<Awaited<ReturnType<typeof getVerifiedDesign>>>): DesignResult {
+  return {
+    slug: entry.slug,
+    title: entry.title,
+    summary: entry.summary,
+    tsx: entry.tsx,
+    circuitJson: entry.circuitJson,
+    checks: entry.checks,
+    stats: entry.stats,
+    verified: true,
+    blockingCount: 0,
+    warningCount: entry.checks.filter((check) => check.severity === 'warning').length,
+    iterations: 1,
+    model: entry.model,
+    fallbackUsed: false,
+    partSearchUsed: false,
+    fab: entry.fab,
+    designHash: entry.designHash,
+    generatedAt: entry.generatedAt,
+    durationMs: 0,
+    repairCount: 0,
+    tokenUsage: { input: 0, output: 0 },
   }
 }
 
-function safeFilename(name: string) {
-  return name
-    .replace(/[^a-z0-9._-]/gi, '-')
-    .replace(/-+/g, '-')
-    .toLowerCase()
-    .slice(0, 100)
+export async function POST(request: Request) {
+  const requestId = crypto.randomUUID().slice(0, 8)
+
+  const limit = await rateLimitExport(request)
+  if (!limit.allowed) {
+    return Response.json(
+      {
+        code: 'RATE_LIMITED',
+        message: 'Too many export downloads. Try again shortly.',
+        retryable: true,
+        requestId,
+      },
+      { status: 429, headers: { 'Retry-After': String(limit.retryAfterSeconds) } },
+    )
+  }
+
+  const parsed = exportRequestSchema.safeParse(await request.json().catch(() => null))
+  if (!parsed.success) {
+    return Response.json(
+      { code: 'INPUT_INVALID', message: 'Invalid export request.', retryable: false, requestId },
+      { status: 400 },
+    )
+  }
+
+  const entry = await getVerifiedDesign(parsed.data.designHash)
+  if (!entry || !entry.verified) {
+    return Response.json(
+      {
+        code: 'CHECKS_FAILED',
+        message:
+          'Manufacturing exports are locked. This design is not in the server-side verified set — re-run it, or fix the blocking checks first.',
+        retryable: true,
+        requestId,
+      },
+      { status: 423 },
+    )
+  }
+
+  const design = storedToDesign(entry)
+
+  try {
+    if (parsed.data.kind === 'fab-zip') {
+      const bundle = await buildFabricationBundle(design)
+      const filename = `${bundleFilename(design.slug, design.designHash)}-fab.zip`
+      return new Response(new Uint8Array(bundle.data), {
+        headers: {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': `attachment; filename="${filename}"`,
+          'Content-Length': String(bundle.data.byteLength),
+          'Cache-Control': 'no-store',
+          'X-Request-Id': requestId,
+        },
+      })
+    }
+
+    const files = await buildIndividualFiles(design)
+    // One path per kind, declared once. The Gerber set is the only multi-file answer, and
+    // it is concatenated below with a header naming each layer.
+    const SINGLE_FILE_PATHS = {
+      'circuit-json': 'design/circuit.json',
+      'circuit-tsx': 'design/circuit.tsx',
+      manifest: 'manifest.json',
+      bom: 'assembly/bom.csv',
+      pnp: 'assembly/pick-and-place.csv',
+    } as const
+
+    // `fab-zip` already returned above; `gerbers` is the only multi-file kind left.
+    const kind: string = parsed.data.kind
+    const wanted =
+      kind === 'gerbers'
+        ? files.filter((file) => file.path.startsWith('fabrication/'))
+        : files.filter((file) => file.path === SINGLE_FILE_PATHS[kind as keyof typeof SINGLE_FILE_PATHS])
+
+    if (!wanted.length) {
+      return Response.json(
+        { code: 'INPUT_INVALID', message: 'Nothing to export for that kind.', retryable: false, requestId },
+        { status: 404 },
+      )
+    }
+
+    if (parsed.data.kind === 'gerbers') {
+      // Several layers in one download: name each file in a header, then the files.
+      const combined = wanted
+        .map((file) => `; --- ${file.path} ---\n${typeof file.data === 'string' ? file.data : '[binary]'}`)
+        .join('\n')
+      return new Response(combined, {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${bundleFilename(design.slug, design.designHash)}-gerbers.txt"`,
+          'Cache-Control': 'no-store',
+          'X-Request-Id': requestId,
+        },
+      })
+    }
+
+    const filename = wanted[0].path.split('/').pop() ?? 'export'
+    return new Response(wanted[0].data as BodyInit, {
+      headers: {
+        'Content-Type': wanted[0].mime,
+        'Content-Disposition': `attachment; filename="${bundleFilename(design.slug, design.designHash)}-${filename}"`,
+        'Cache-Control': 'no-store',
+        'X-Request-Id': requestId,
+      },
+    })
+  } catch (error) {
+    const appError = toAppError(error)
+    console.error(`[export:${requestId}] ${appError.internal ?? appError.message}`)
+    return Response.json(toClientError(appError, requestId), { status: 500 })
+  }
 }
