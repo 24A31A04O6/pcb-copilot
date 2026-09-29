@@ -34,7 +34,7 @@ const nextConfig = {
   // Production optimizations
   compress: true,
   poweredByHeader: false,
-  async headers() {
+  headers() {
     return [
       {
         source: '/:path*',

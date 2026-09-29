@@ -4,3 +4,5 @@ minimumReleaseAgeExclude:
 
 allowBuilds:
   sharp: false
+  esbuild: true
+  msw: true
