@@ -1,54 +1,65 @@
-import type { DesignStreamEvent } from '@/lib/design'
-import { clientKeyFromRequest, createRateLimitStore } from '@/lib/rate-limit'
+import { isBoardColorId } from '@/lib/board-colors'
+import type { PipelineEvent } from '@/lib/design'
+import { toAppError, toClientError } from '@/lib/errors'
+import { rateLimitDesign } from '@/lib/server/rate-limit'
 import { designRequestSchema } from '@/lib/schemas'
-import { createVerifiedDesign } from '@/lib/server/agent'
-import { analyzeDesignRequest } from '@/lib/server/brief'
-import { getServerConfig } from '@/lib/server/config'
+import { isFabPresetId } from '@/lib/server/checks/fab-presets'
+import { getServerConfig } from '@/lib/server/env'
+import { runPipeline } from '@/lib/server/pipeline'
+import { createDesignCache, saveVerifiedDesign } from '@/lib/server/store'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
-// Fluid Compute: prefer region close to Fireworks (us-west)
-export const preferredRegion = ['sfo1', 'iad1']
 
-const rateLimit = createRateLimitStore({ max: 6, windowMs: 10 * 60_000, maxKeys: 2000 })
+/**
+ * The design cache is module-scoped, so a warm instance serves an identical brief
+ * instantly. It is bounded, and every entry is also written to Redis when configured.
+ */
+const cache = createDesignCache(50)
+
+function sse(event: PipelineEvent): Uint8Array {
+  return new TextEncoder().encode(`id: ${event.id}\nevent: ${event.event}\ndata: ${JSON.stringify(event.data)}\n\n`)
+}
+
+function comment(text: string): Uint8Array {
+  return new TextEncoder().encode(`: ${text}\n\n`)
+}
 
 export async function POST(request: Request) {
   const requestId = crypto.randomUUID().slice(0, 8)
-  const clientKey = clientKeyFromRequest(request)
+  const started = Date.now()
 
-  if (!rateLimit.allow(clientKey)) {
-    return new Response(
-      JSON.stringify({
-        error: 'Too many design requests. Please wait 2 minutes before trying again.',
-        requestId,
-      }),
+  const body = (await request.json().catch(() => null)) as unknown
+  const parsed = designRequestSchema.safeParse(body)
+  if (!parsed.success) {
+    return Response.json(
       {
-        status: 429,
-        headers: {
-          'Content-Type': 'application/json',
-          'Retry-After': '120',
-          'X-Request-Id': requestId,
-        },
+        ...toClientError(
+          toAppError(new Error('input')),
+          requestId,
+        ),
+        code: 'INPUT_INVALID',
+        message: 'That brief could not be used. Keep it under 4000 characters.',
+        details: parsed.error.issues.slice(0, 4).map((issue) => issue.message),
       },
+      { status: 400, headers: { 'X-Request-Id': requestId } },
     )
   }
 
-  const parsed = designRequestSchema.safeParse(
-    await request.json().catch(() => null),
-  )
-  if (!parsed.success) {
-    rateLimit.rollback(clientKey)
-    return new Response(
-      JSON.stringify({
-        error: 'Invalid design conversation. Check message length and count.',
-        details: parsed.error.issues.slice(0, 3).map((i) => i.message),
-        requestId,
-      }),
+  const limit = await rateLimitDesign(request)
+  if (!limit.allowed) {
+    return Response.json(
       {
-        status: 400,
-        headers: { 'Content-Type': 'application/json', 'X-Request-Id': requestId },
+        code: 'RATE_LIMITED',
+        message: `Too many designs from this address. Try again in ${limit.retryAfterSeconds}s.`,
+        retryable: true,
+        requestId,
+      },
+      {
+        status: 429,
+        headers: { 'Retry-After': String(limit.retryAfterSeconds), 'X-Request-Id': requestId },
       },
     )
   }
@@ -57,124 +68,107 @@ export async function POST(request: Request) {
   try {
     config = getServerConfig()
   } catch (error) {
-    rateLimit.rollback(clientKey)
-    return new Response(
-      JSON.stringify({
-        error: error instanceof Error ? error.message : 'Server misconfigured.',
-        requestId,
-      }),
+    return Response.json(
       {
-        status: 500,
-        headers: { 'Content-Type': 'application/json', 'X-Request-Id': requestId },
+        code: 'LLM_MISCONFIGURED',
+        message: 'The server is missing model configuration. Check the deployment environment.',
+        retryable: false,
+        requestId,
+        details: error instanceof Error ? [error.message.split('\n')[0] ?? ''] : [],
       },
+      { status: 500, headers: { 'X-Request-Id': requestId } },
     )
   }
 
-  const encoder = new TextEncoder()
-  let abortController: AbortController | null = new AbortController()
-  const clientSignal = request.signal
+  const boardColorId = isBoardColorId(parsed.data.boardColor) ? parsed.data.boardColor : 'green'
+  const fabPresetId = isFabPresetId(parsed.data.fabPreset) ? parsed.data.fabPreset : 'prototype-hobby-2layer'
 
-  // Link client abort to our controller for Fluid Compute efficiency
-  const onClientAbort = () => {
-    abortController?.abort()
-    console.log(`[design:${requestId}] client aborted`)
-  }
-  clientSignal.addEventListener('abort', onClientAbort, { once: true })
+  const abort = new AbortController()
+  const onClientAbort = () => abort.abort()
+  request.signal.addEventListener('abort', onClientAbort, { once: true })
 
-  const stream = new ReadableStream({
+  let id = 0
+  const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const send = (event: DesignStreamEvent) => {
+      const send = (event: Omit<PipelineEvent, 'id'>) => {
+        if (controller.desiredSize === null) return
         try {
-          if (controller.desiredSize === null) return // closed
-          const withTimestamp = { ...event, timestamp: Date.now() } as DesignStreamEvent & { timestamp: number }
-          controller.enqueue(encoder.encode(`${JSON.stringify(withTimestamp)}\n`))
+          id += 1
+          controller.enqueue(sse({ ...event, id } as PipelineEvent))
         } catch {
-          // Controller may be closed
+          /* the client went away */
         }
+      }
+
+      // Keep intermediaries (and Vercel) from buffering the stream.
+      try {
+        controller.enqueue(comment(`request ${requestId} started`))
+      } catch {
+        /* noop */
       }
 
       try {
-        send({ type: 'stage', message: 'Reviewing requirements with Fireworks' })
-
-        const brief = await analyzeDesignRequest(
-          config,
-          parsed.data.messages,
-          parsed.data.allowClarification,
-          { signal: abortController!.signal },
-        )
-
-        if (brief.status === 'needs_clarification' && brief.questions.length > 0) {
-          rateLimit.rollback(clientKey) // Allow retry without penalty
-          send({ type: 'clarification', questions: brief.questions })
-          return
-        }
-
-        let codeBuffer = ''
-
-        const design = await createVerifiedDesign(config, brief, {
-          signal: abortController!.signal,
-          onStage: (message) => send({ type: 'stage', message }),
-          onCodeChunk: (chunk) => {
-            codeBuffer += chunk
-            // Throttle code_chunk events to avoid overwhelming client
-            if (codeBuffer.length % 100 < chunk.length) {
-              send({ type: 'code_chunk', chunk })
-            }
-          },
-          onPartialResult: (partial) => {
-            // Send partial results for live preview
-            send({ type: 'partial_result', design: partial })
-            send({ type: 'diagnostics', diagnostics: partial.diagnostics })
-          },
-          onDiagnostics: (diagnostics) => {
-            send({ type: 'diagnostics', diagnostics })
+        const design = await runPipeline(config, {
+          brief: parsed.data.brief,
+          revisionNote: parsed.data.revisionNote,
+          boardColorId,
+          fabPresetId,
+          signal: abort.signal,
+          requestId,
+          cache,
+          onEvent: send,
+          onLog: (level, message) => {
+            const line = JSON.stringify({ level, requestId, message: message.slice(0, 400) })
+            if (level === 'warn') console.warn(line)
+            else console.info(line)
           },
         })
-
-        // Final code
-        if (codeBuffer.length > 0) {
-          send({ type: 'code', code: design.tsx })
+        if (design.verified) {
+          await saveVerifiedDesign(design).catch((error: unknown) => {
+            console.warn(`[design:${requestId}] could not persist verified design:`, String(error))
+          })
         }
-
-        send({ type: 'result', design })
       } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          console.log(`[design:${requestId}] aborted`)
-          // Don't send error if client aborted, just close
-          try {
-            controller.close()
-          } catch {}
-          return
-        }
-        const message = error instanceof Error ? error.message : 'PCB generation failed.'
-        console.error(`[design:${requestId}] error:`, message)
+        const appError = toAppError(error)
+        console.error(
+          JSON.stringify({
+            level: 'error',
+            requestId,
+            code: appError.code,
+            internal: appError.internal ?? appError.message,
+            durationMs: Date.now() - started,
+          }),
+        )
+        const client = toClientError(appError, requestId)
         send({
-          type: 'error',
-          message,
+          event: 'error',
+          data: { ...client, requestId: client.requestId ?? requestId },
         })
       } finally {
+        console.info(
+          JSON.stringify({ level: 'info', requestId, durationMs: Date.now() - started }),
+        )
         try {
           controller.close()
-        } catch {}
-        abortController = null
-        clientSignal.removeEventListener('abort', onClientAbort)
+        } catch {
+          /* already closed */
+        }
+        request.signal.removeEventListener('abort', onClientAbort)
       }
     },
     cancel() {
-      // Client cancelled stream reading
-      abortController?.abort()
-      console.log(`[design:${requestId}] stream cancelled by client`)
+      abort.abort()
     },
   })
 
   return new Response(stream, {
     headers: {
-      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
-      'X-Content-Type-Options': 'nosniff',
-      'X-Request-Id': requestId,
-      'X-Accel-Buffering': 'no', // Disable nginx buffering for live stream
       Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+      'X-Request-Id': requestId,
+      'X-Content-Type-Options': 'nosniff',
     },
   })
 }
