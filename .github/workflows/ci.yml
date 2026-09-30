@@ -1,0 +1,189 @@
+name: ci
+
+# Every push and pull request runs the same gate. Nothing here is allowed to be green on a
+# promise: the golden suite compiles real boards, the secret scan fails on a real leak, and
+# the browser suite runs against a real production build.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # No FIREWORKS_API_KEY is set in CI. Every model-dependent path reports `skipped` and says
+  # so; nothing reports a pass it did not earn. The model suite is a separate workflow that
+  # runs only when a secret is present.
+  CI: 'true'
+
+jobs:
+  verify:
+    name: typecheck, lint, unit, integration, goldens, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: No committed secrets
+        # Runs before everything else. A leaked key in this commit is worth failing on
+        # before spending any compute on it.
+        run: pnpm run verify:secrets
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Unit and integration tests
+        run: pnpm run test:unit && pnpm run test:integration
+
+      - name: Offline evals
+        # 24 cases against the real compiler and the real check engine. The model cases
+        # report `skipped` here, which is what they are supposed to do without a key.
+        run: pnpm run eval
+
+      - name: Golden designs
+        # 23 boards, each compiled by the isolated sandbox and hashed. GOLDEN=1 opts the
+        # suite in; it is not part of `pnpm test` because each board costs a real compile.
+        env:
+          GOLDEN: '1'
+        run: pnpm run test:golden
+
+      - name: Production build
+        run: pnpm run build
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports
+          path: |
+            reports/
+            evals/results/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  browser:
+    name: playwright, axe, visual regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm run test:e2e:install
+
+      - name: Build
+        run: pnpm run build
+
+      - name: End-to-end, axe and visual regression
+        # The app has no API key here, so the design-flow specs skip and say so. The shell,
+        # brief-validation, colour, history, health and security-header specs all run.
+        run: pnpm run test:e2e
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  model-evals:
+    name: live model evals and comparison
+    # Opt-in, and manual by default. These cost real money and produce a different answer
+    # every run, so they belong behind a button rather than in every pull request.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Model evals
+        env:
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+        run: pnpm run eval -- --model
+
+      - name: Model comparison
+        env:
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+          FIREWORKS_FALLBACK_MODEL: ${{ vars.FIREWORKS_FALLBACK_MODEL }}
+        run: pnpm run eval -- --compare
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: |
+            evals/results/
+            docs/EVALS.md
+            docs/MODEL-COMPARISON.md
+          retention-days: 30
+          if-no-files-found: ignore
+
+  dependency-audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Audit
+        # Fails on advisories with a fix available at the next minor or patch. `--audit-level`
+        # is high deliberately: an advisory with no fix does not fail a build, it goes in
+        # the weekly review.
+        run: pnpm audit --audit-level high
