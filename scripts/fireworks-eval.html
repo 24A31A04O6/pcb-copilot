@@ -153,6 +153,18 @@ function renderResults(models, spent, budget) {
 
 $('stop').onclick = () => { aborted = true; $('status').textContent = 'stopping…' }
 
+// Zero-effort mode: the run auto-starts the moment a key is pasted/entered.
+let autoStarted = false
+function maybeAutoRun() {
+  if (autoStarted || $('run').disabled) return
+  if (!$('key').value.trim()) return
+  autoStarted = true
+  $('status').textContent = 'auto-starting…'
+  $('run').click()
+}
+$('key').addEventListener('paste', () => setTimeout(maybeAutoRun, 300))
+$('key').addEventListener('change', maybeAutoRun)
+
 $('run').onclick = async () => {
   aborted = false
   const key = $('key').value.trim()
@@ -212,6 +224,7 @@ $('run').onclick = async () => {
   renderResults(models, spent, budget)
   $('status').textContent = 'done'
   $('run').disabled = false
+  autoStarted = false // allow auto-run again if a different key is pasted
 }
 </script>
 </body>
