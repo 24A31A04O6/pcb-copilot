@@ -219,6 +219,38 @@ Checked on **2026-09-29** unless stated otherwise.
 
 ---
 
+## Network egress
+
+### 2026-09-29 — `*.fireworks.ai` is unreachable from this environment
+
+**Question:** can the Fireworks API be called from here, to measure the two models?
+
+**Answer:** no. The egress is host-scoped blocked.
+
+| Check | Result |
+| --- | --- |
+| `getent ahostsv4 api.fireworks.ai` | `35.212.203.66` — an A record does exist |
+| `getent hosts api.fireworks.ai` | returns **IPv6 only**; this sandbox has no IPv6 egress, so Node and curl both try the AAAA records first and die there |
+| `curl -4 https://api.fireworks.ai/v1/models` | still fails — forcing IPv4 does not help |
+| TCP to `35.212.203.66:443` | **connects** |
+| `openssl s_client -connect api.fireworks.ai:443` | `TLS handshake has read 0 bytes and written 329 bytes` — Client Hello sent, peer closes |
+| Same test against `api.github.com` | `Protocol : TLSv1.3` — completes normally |
+| Retries | 3/3 identical |
+
+**Takeaway:** a host-scoped egress block that terminates TLS immediately after the Client
+Hello. Not DNS, not general connectivity. Two consequences worth carrying: the earlier
+Playwright Chromium download failure (`ECONNRESET` during TLS) is almost certainly the same
+filter, and any deployment from a similarly restricted network fails identically — which is
+why `/api/health` reports `degraded` rather than hanging.
+
+**Consequence here:** no live model call was made and **zero tokens were spent**. The API key
+lives only in `.env.local` (gitignored) and was never transmitted. The model comparison is a
+researched assessment, labelled as such in `docs/MODEL-COMPARISON.md`, with a budget-capped
+command for producing the measured version.
+
+**Supersedes:** the earlier note in this file that no Fireworks call was possible purely
+because `FIREWORKS_API_KEY` was absent. The missing key was not the only obstacle.
+
 ## Still unresolved
 
 These were needed by the task and are **not** yet verified. They are listed here rather than

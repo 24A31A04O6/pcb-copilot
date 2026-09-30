@@ -30,7 +30,7 @@
     "build:assets": "tsx scripts/build-icons.ts && tsx scripts/render-zero-sheet.ts /tmp/zero-states.png",
     "knowledge:build": "tsx scripts/build-knowledge-index.ts",
     "golden:verify": "vitest run tests/golden",
-    "eval": "tsx evals/run.ts",
+    "eval": "tsx --env-file-if-exists=.env.local evals/run.ts",
     "verify:secrets": "node scripts/verify-no-secrets.mjs",
     "prepare": "node -e \"process.exit(0)\""
   },

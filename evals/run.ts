@@ -1,10 +1,15 @@
 /**
  * The eval runner.
  *
- *   pnpm run eval              run everything that can run without a key
- *   pnpm run eval -- --model   also run the model cases (needs FIREWORKS_API_KEY)
- *   pnpm run eval -- --compare run each model case against both the primary and the
- *                              fallback model and write docs/MODEL-COMPARISON.md
+ *   pnpm run eval                    run everything that can run without a key
+ *   pnpm run eval -- --model         also run the model cases (needs FIREWORKS_API_KEY)
+ *   pnpm run eval -- --compare       run each model case against both models and write
+ *                                    docs/MODEL-COMPARISON.md
+ *   pnpm run eval -- --budget=60000  hard cap on total tokens; stops before it overspends
+ *   pnpm run eval -- --only=a,b,c    run a named subset of the model cases
+ *
+ * The key is read from `.env.local`, which is how the app reads it too, so the same secret
+ * serves both without being exported into a shell history.
  *
  * Nothing here is mocked. An offline case compiles in the real sandbox and is scored by
  * the real check engine; a model case runs the real pipeline against Fireworks. A case
@@ -43,6 +48,81 @@ type CaseResult = {
 const args = new Set(process.argv.slice(2))
 const wantModel = args.has('--model') || args.has('--compare')
 const wantCompare = args.has('--compare')
+
+/**
+ * Hard token budget.
+ *
+ * The eval corpus is not free and the worst case is not obvious: a model case is a brief
+ * call plus a codegen call plus up to three repair calls, against *two* models in
+ * `--compare` mode, and codegen alone runs to several thousand output tokens. A run started
+ * without thinking about it can spend an order of magnitude more than expected.
+ *
+ * So the budget is a circuit breaker, not an estimate. `BUDGET.spent` only grows after a
+ * call has actually returned; `assertBudget` is checked before each one. The overrun check
+ * uses the *default* token ceiling, so a case that will be refused is caught before it is
+ * paid for rather than after.
+ *
+ * Default is deliberately small. `pnpm run eval -- --compare` is a scheduled job, not a
+ * thing to run on every deploy.
+ */
+const DEFAULT_BUDGET_TOKENS = 120_000
+const MAX_CODEGEN_OUTPUT_TOKENS = 8_000
+
+function readBudgetTokens(): number {
+  const flag = process.argv.find((a) => a.startsWith('--budget='))
+  const raw = flag ? flag.slice('--budget='.length) : null
+  if (raw === null) return DEFAULT_BUDGET_TOKENS
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    console.error(`--budget must be a positive number of tokens, got ${raw}`)
+    process.exit(2)
+  }
+  return Math.floor(parsed)
+}
+
+const BUDGET = { limit: readBudgetTokens(), spent: 0, stopped: false, calls: 0 }
+
+/**
+ * `--only=a,b,c` runs a named subset. The full 16-case corpus against two models is not a
+ * thing to do on a whim; a quality question is usually answerable from a handful.
+ */
+function selectedModelCases() {
+  const flag = process.argv.find((a) => a.startsWith('--only='))
+  if (!flag) return EVAL_CASES.filter((c) => c.kind === 'model')
+  const wanted = new Set(flag.slice('--only='.length).split(',').map((v) => v.trim()).filter(Boolean))
+  const chosen = EVAL_CASES.filter((c) => c.kind === 'model' && wanted.has(c.id))
+  if (chosen.length === 0) {
+    console.error(
+      `--only matched no model cases. Available:\n  ${EVAL_CASES.filter((c) => c.kind === 'model')
+        .map((c) => c.id)
+        .join('\n  ')}`,
+    )
+    process.exit(2)
+  }
+  return chosen
+}
+
+function assertBudget(what: string): void {
+  if (BUDGET.stopped) {
+    throw new Error(
+      `token budget exhausted: ${BUDGET.spent.toLocaleString()} of ${BUDGET.limit.toLocaleString()} used`,
+    )
+  }
+  if (BUDGET.spent + MAX_CODEGEN_OUTPUT_TOKENS > BUDGET.limit) {
+    BUDGET.stopped = true
+    throw new Error(
+      `token budget: ${BUDGET.spent.toLocaleString()} used, next case (${what}) could take up to ` +
+        `${MAX_CODEGEN_OUTPUT_TOKENS.toLocaleString()} more, limit is ${BUDGET.limit.toLocaleString()}. ` +
+        `Stopped before spending it. Re-run with --budget=<n> to continue.`,
+    )
+  }
+}
+
+function recordSpend(usage: { input: number; output: number }): void {
+  BUDGET.spent += usage.input + usage.output
+  BUDGET.calls += 1
+  if (BUDGET.spent > BUDGET.limit) BUDGET.stopped = true
+}
 
 const results: CaseResult[] = []
 const started = Date.now()
@@ -362,6 +442,7 @@ async function runModel(evalCase: EvalCase, modelOverride?: string): Promise<Cas
   metrics['inputTokens'] = result?.tokenUsage.input ?? null
   metrics['outputTokens'] = result?.tokenUsage.output ?? null
   metrics['repairs'] = result?.repairCount ?? null
+  if (result) recordSpend(result.tokenUsage)
 
   for (const assertion of evalCase.assertions) {
     switch (assertion.split(':')[0]) {
@@ -442,7 +523,30 @@ async function runModel(evalCase: EvalCase, modelOverride?: string): Promise<Cas
 
 async function runModelSuite(label: string, model?: string): Promise<CaseResult[]> {
   const suite: CaseResult[] = []
-  for (const evalCase of EVAL_CASES.filter((c) => c.kind === 'model')) {
+  for (const evalCase of selectedModelCases()) {
+    // The circuit breaker. A budget stop is recorded as a skip with the reason, never as a
+    // fail: a case that was never run has no opinion about the model, and counting it as a
+    // failure would quietly make one model look worse than the other.
+    try {
+      assertBudget(evalCase.id)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      suite.push(
+        record({
+          id: `${label}/${evalCase.id}`,
+          kind: 'model',
+          title: evalCase.title,
+          intent: evalCase.intent,
+          brief: evalCase.brief,
+          outcome: 'skipped',
+          checks: [],
+          metrics: {},
+          error: message,
+          durationMs: 0,
+        }),
+      )
+      continue
+    }
     const result = await runModel(evalCase, model)
     result.id = `${label}/${evalCase.id}`
     suite.push(result)
@@ -527,6 +631,7 @@ function writeReport(): void {
       : '- Model cases: **not run** — this invocation did not include `--model`, or `FIREWORKS_API_KEY` is absent',
     `- Median compile time: ${summary.medianCompileMs} ms`,
     summary.totalCostUsd > 0 ? `- Total model spend: $${summary.totalCostUsd} at published rates` : '- Model spend: $0 (no model calls)',
+    `- Token budget: ${BUDGET.spent.toLocaleString()} of ${BUDGET.limit.toLocaleString()} used${BUDGET.stopped ? ' — **stopped early, remaining cases skipped**' : ''}`,
     '',
     '## Cases',
     '',

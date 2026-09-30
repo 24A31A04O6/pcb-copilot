@@ -122,12 +122,21 @@ The first one is the dangerous kind: `numLayers` does not fail, it just quietly 
 This is the part that matters. None of the following was executed, and nothing in this
 repository claims otherwise.
 
-1. **No live Fireworks call has been made.** `FIREWORKS_API_KEY` is absent. The sixteen
-   model eval cases report `skipped`. Every stage from the brief onwards is covered by MSW
-   and by the goldens — not by a real model.
-2. **The model comparison has not been produced.** `docs/MODEL-COMPARISON.md` does not exist
-   yet. The decision to make GLM the default rests on context length and price, not on
-   measured quality.
+1. **No live Fireworks call has been made.** A key was supplied and confirmed to reach the
+   code — `pnpm run eval -- --model` loads it from `.env.local` and the pipeline starts — but
+   `*.fireworks.ai` is **unreachable from this environment**: TCP to :443 connects and the TLS
+   handshake is dropped immediately after the Client Hello. Retried three times. GitHub over
+   the identical path completes a TLSv1.3 handshake, so it is a host-scoped egress block.
+   **The key was never transmitted and zero tokens were spent.** The sixteen model eval cases
+   report `skipped`. Every stage from the brief onwards is covered by MSW and by the goldens —
+   not by a real model. The comparison in [MODEL-COMPARISON.md](MODEL-COMPARISON.md) is
+   therefore a *researched* assessment, labelled as such, with the measured version one
+   command away.
+2. **The model comparison has not been measured.** `docs/MODEL-COMPARISON.md` exists and is
+   explicit that it is a researched assessment, not a result. The decision to make GLM the
+   default rests on published benchmarks, price and context length — not on this app's
+   actual success rate. `pnpm run eval -- --compare --budget=150000` measures it in about
+   five cases; it has not been run here for the network reason above.
 3. **The browser suite has never run.** The Playwright CDN refused the Chromium download
    (`ECONNRESET` / TLS disconnect). The specs are written, type-checked, linted and wired
    into CI, but they have not executed — and the visual baselines do not exist, so the first

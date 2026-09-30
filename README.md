@@ -56,6 +56,7 @@ path refuses with a typed error. Nothing is faked.
 | `pnpm run eval` | 24 offline eval cases; model cases report `skipped` |
 | `pnpm run eval -- --model` | Add the 16 model cases (needs a key) |
 | `pnpm run eval -- --compare` | Every case against both models → `docs/MODEL-COMPARISON.md` |
+| `pnpm run eval -- --compare --only=a,b --budget=150000` | A named subset, with a hard token cap |
 | `pnpm run golden:hash` | Regenerate golden hashes and print drift |
 | `pnpm run test:e2e` | Playwright, axe, visual regression |
 | `pnpm run verify:secrets` | Fail if a secret is committed |
@@ -69,6 +70,12 @@ and what goes wrong when it is wrong. The only required one is `FIREWORKS_API_KE
 
 There is deliberately **no `NEXT_PUBLIC_` variable**. Nothing the browser needs is
 configurable, and nothing server-side is reachable from it.
+
+`pnpm run eval -- --model` and `--compare` read the key from `.env.local` — the same file the
+app reads it from — so the same secret serves both without being exported into a shell
+history. `--budget=<n>` is a hard circuit breaker checked *before* each model case, sized
+against the 8k output ceiling, so a run that would overspend stops instead of finding out
+afterwards.
 
 ## Keyboard
 
